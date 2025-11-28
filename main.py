@@ -85,7 +85,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (ROBUST PROMPT)
+            # 2. Plan (FORCE PRINT PROMPT)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -101,20 +101,19 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             
             2. SOLVE THE QUESTION:
                - IF CSV/EXCEL:
-                 - Code MUST: `df = pd.read_csv(url)`
-                 - **CRITICAL:** Clean columns first: `df.columns = df.columns.str.strip()`
-                 - Filter: Apply `df = df[df['ColumnName'] > X]`.
-                 - Answer: Print the result.
+                 - `df = pd.read_csv(url)`
+                 - Clean columns: `df.columns = df.columns.str.strip()`
+                 - Filter & Calculate.
+                 - **CRITICAL:** `print(final_result)`
                - IF SCRAPING A LINK:
-                 - Code MUST: `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
-                 - **CRITICAL:** Use BeautifulSoup to strip HTML: `print(bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip())`
-                 - Do NOT print raw HTML tags like <div>.
-               - PRINT ONLY THE FINAL ANSWER.
+                 - `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
+                 - **CRITICAL:** Just print the text: `print(resp.text)`
+                 - Do NOT assume HTML structure unless asked.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... import bs4... df = pd.read_csv(url)... print(ans)",
+                "python_code": "import requests... resp = requests.get(url)... print(resp.text)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -146,9 +145,15 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
                     print(f"❌ Code Error: {e}")
-                    final_answer = "Error"
+                    final_answer = f"Error: {e}"
                 finally:
                     sys.stdout = old_stdout
+                
+                # FAILSAFE: If code printed nothing, assume error or trying to be silent
+                if not final_answer:
+                    print("⚠️ Warning: Code produced no output. Using default.")
+                    final_answer = "NO_OUTPUT_FROM_CODE"
+
                 print(f"✅ Computed Answer: {final_answer}")
 
             # 4. Submit
