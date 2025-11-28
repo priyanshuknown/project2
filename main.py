@@ -5,6 +5,7 @@ import json
 import requests
 import pandas as pd
 import io
+from urllib.parse import urljoin  # <--- ADDED THIS
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
@@ -17,7 +18,6 @@ if sys.platform == 'win32':
 # --- CONFIGURATION ---
 
 # !!! PASTE YOUR GROQ API KEY HERE !!!
-# Get it for free at https://console.groq.com/keys
 GROQ_API_KEY = "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"
 
 # Setup Groq Client
@@ -46,20 +46,16 @@ def clean_json_text(text):
     return text.replace("```json", "").replace("```", "").strip()
 
 async def get_llm_plan(prompt_text):
-    """
-    Uses Groq (Llama 3) to generate the plan.
-    """
     if not client:
-        print("❌ Error: Groq Client is missing. Check API Key.")
+        print("❌ Error: Groq Client is missing.")
         return None
 
     try:
         print("🤖 Asking Groq (Llama 3.3)...")
         response = client.chat.completions.create(
-            # Using Llama 3.3 70B (Very smart, free on Groq)
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a helpful data assistant. Return valid JSON only. Do not output markdown blocks."},
+                {"role": "system", "content": "You are a helpful data assistant. Return valid JSON only."},
                 {"role": "user", "content": prompt_text}
             ],
             response_format={"type": "json_object"}
@@ -82,19 +78,24 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             content = await page.evaluate("document.body.innerText")
             print(f"📄 Scraped: {content[:100]}...")
 
-            # 2. Plan
+            # 2. Plan (Updated Prompt to handle relative URLs)
             prompt = f"""
             You are a Data Science Agent.
+            CURRENT PAGE URL: {task_url}
+            
             QUIZ TEXT:
             ---
             {content}
             ---
+            
             TASKS:
-            1. Identify 'submission_url'.
+            1. Identify 'submission_url'. (If it is relative like '/submit', convert it to absolute using the Current Page URL).
             2. Solve the question.
+               - If downloading files/scraping pages relative to this page, construct ABSOLUTE URLs first.
                - If data analysis (CSV/PDF, math), WRITE PYTHON CODE.
                - Use `requests`, `pandas`. Print final answer.
                - If text only, provide answer.
+            
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
@@ -112,6 +113,11 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             final_answer = plan.get("text_answer")
             python_code = plan.get("python_code")
 
+            # --- FIX: Ensure URL is absolute ---
+            if submission_url and not submission_url.startswith("http"):
+                submission_url = urljoin(task_url, submission_url)
+                print(f"🔗 Fixed Relative Submission URL: {submission_url}")
+
             # 3. Execute Code
             if python_code and python_code != "null":
                 print("⚙️ Executing Python Code...")
@@ -119,7 +125,14 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
                 try:
-                    exec_globals = {'pd': pd, 'requests': requests, 'print': print}
+                    # Pass 'urljoin' and 'task_url' to the code environment
+                    exec_globals = {
+                        'pd': pd, 
+                        'requests': requests, 
+                        'print': print, 
+                        'urljoin': urljoin,
+                        'task_url': task_url
+                    }
                     exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
@@ -146,6 +159,10 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 resp_json = resp.json()
                 next_url = resp_json.get("url")
                 if next_url:
+                    # FIX: Resolve next_url if it is relative
+                    if not next_url.startswith("http"):
+                        next_url = urljoin(task_url, next_url)
+                        
                     print(f"🔄 Next Question Found! Proceeding to: {next_url}")
                     await solve_quiz(next_url, email, secret)
                 else:
