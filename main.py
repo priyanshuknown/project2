@@ -67,38 +67,50 @@ async def solve_quiz(task_url: str, email: str, secret: str):
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
-            # 1. Scrape (With Extra Wait)
+            # 1. Scrape with Link Extraction
             await page.goto(task_url, timeout=60000)
             await page.wait_for_load_state("networkidle")
-            await asyncio.sleep(2) # <--- ADDED WAIT to ensure JS text renders
+            await asyncio.sleep(1) # Wait for JS
             
+            # Get text
             content = await page.evaluate("document.body.innerText")
-            print(f"📄 Scraped (First 500 chars):\n{content[:500]}\n...")
+            
+            # Get Links (Crucial for CSV/PDF tasks)
+            links = await page.evaluate("""
+                Array.from(document.querySelectorAll('a')).map(a => 
+                    `[LINK: ${a.innerText}](${a.href})`
+                ).join('\\n')
+            """)
+            
+            full_context = f"{content}\n\n--- LINKS FOUND ---\n{links}"
+            print(f"📄 Scraped Content (with links):\n{full_context[:500]}...")
 
             # 2. Plan
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
             
-            PAGE TEXT:
+            PAGE CONTENT:
             ---
-            {content}
+            {full_context}
             ---
             
             YOUR TASKS:
             1. IDENTIFY SUBMISSION URL:
                - Look for "Post to..." or "Submit to...".
-               - If relative ("/submit"), convert to absolute using CURRENT PAGE URL.
+               - If relative ("/submit"), convert to absolute using `urljoin`.
             
             2. SOLVE THE QUESTION:
-               - If it asks for a calculation (sum, count, etc.), WRITE PYTHON CODE.
-               - If it asks to download a file, WRITE PYTHON CODE.
+               - Look at the "LINKS FOUND" section.
+               - If the task is "Sum of column in CSV" or "Parse PDF", use the URL from the LINKS section.
+               - If the task is "Scrape /path", construct the URL using `urljoin`.
+               - WRITE PYTHON CODE to download and process the data.
                - Code must print the FINAL ANSWER only.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... print(ans)",
+                "python_code": "import requests... df = pd.read_csv('url')... print(ans)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -112,6 +124,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             final_answer = plan.get("text_answer")
             python_code = plan.get("python_code")
 
+            # Fix relative submission URL
             if submission_url and not submission_url.startswith("http"):
                 submission_url = urljoin(task_url, submission_url)
 
@@ -147,11 +160,9 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 "answer": final_answer 
             }
             
-            # --- DEBUG LOG ---
-            print(f"📤 Submitting Payload: {json.dumps(submit_payload)}")
-            
+            print(f"📤 Submitting to {submission_url}...")
             resp = requests.post(submission_url, json=submit_payload)
-            print(f"✅ Status: {resp.status_code} | Response: {resp.text}")
+            print(f"✅ Status: {resp.status_code} | {resp.text}")
 
             # 5. RECURSIVE LOOP
             try:
@@ -176,5 +187,4 @@ async def solve_quiz(task_url: str, email: str, secret: str):
 async def run_quiz_endpoint(payload: TaskPayload, background_tasks: BackgroundTasks):
     if payload.secret != MY_SECRET:
         raise HTTPException(status_code=403, detail="Invalid Secret")
-    background_tasks.add_task(solve_quiz, payload.url, payload.email, payload.secret)
-    return {"message": "Task started"}
+    background_tasks.add_task(solve_quiz, payload.url, payload
