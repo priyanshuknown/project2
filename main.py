@@ -47,8 +47,8 @@ async def get_llm_plan(prompt_text):
     if GEMINI_API_KEY:
         try:
             print("🤖 Asking Gemini (Direct HTTP)...")
-            # Using standard gemini-1.5-flash endpoint
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            # CHANGED TO GEMINI-PRO (Safest Model)
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
             payload = {
                 "contents": [{
                     "parts": [{"text": prompt_text}]
