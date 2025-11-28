@@ -6,7 +6,7 @@ import requests
 import pandas as pd
 import io
 import re
-import bs4  # <--- NEW IMPORT
+import bs4
 from urllib.parse import urljoin
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
@@ -76,7 +76,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             
             content = await page.evaluate("document.body.innerText")
             
-            # Extract Links for the LLM
+            # Extract Links
             links = await page.evaluate("""
                 Array.from(document.querySelectorAll('a')).map(a => 
                     `[LINK_TEXT: ${a.innerText}] (URL: ${a.href})`
@@ -86,7 +86,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (SMARTER PROMPT)
+            # 2. Plan (SIMPLIFIED PROMPT FOR RAW OUTPUT)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -101,21 +101,18 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                - If relative ("/submit"), convert to absolute using `urljoin`.
             
             2. SOLVE THE QUESTION:
-               - Look for LINKS to CSVs, PDFs, or Data pages.
-               - IF CSV/EXCEL:
-                 - Look for "Cutoff" or "Filter" requirements in the text.
-                 - Use `pd.read_csv()`. Filter data immediately. Calculate result.
-               - IF SCRAPING A LINK:
+               - IF SCRAPING A LINK (e.g. "Get secret code from..."):
                  - Use `requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
-                 - Use `bs4.BeautifulSoup` to parse HTML if needed.
-                 - Extract ONLY the secret code (remove HTML tags).
-               - WRITE PYTHON CODE.
-               - Print ONLY the final answer value.
+                 - **CRITICAL:** Just `print(response.text.strip())`. Do not try to parse HTML unless explicitly asked.
+               - IF CSV/EXCEL:
+                 - Look for Filters in text (e.g. "Cutoff").
+                 - Load CSV, Filter, Calculate.
+                 - Print ONLY the final answer value.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... headers={{'User-Agent': 'Mozilla/5.0'}}... df = pd.read_csv('url')... filtered = df[df['val'] > cutoff]... print(ans)",
+                "python_code": "import requests... headers={{'User-Agent': 'Mozilla/5.0'}}... resp = requests.get('url', headers=headers)... print(resp.text.strip())",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -139,7 +136,6 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
                 try:
-                    # PASS ALL TOOLS TO THE ROBOT
                     exec_globals = {
                         'pd': pd, 
                         'requests': requests, 
@@ -148,14 +144,14 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                         'task_url': task_url,
                         'email': email,
                         're': re,
-                        'bs4': bs4,     # <--- Added BeautifulSoup
-                        'io': io,       # <--- Added IO (Fixes CSV errors)
-                        'json': json    # <--- Added JSON
+                        'bs4': bs4,
+                        'io': io,
+                        'json': json
                     }
                     exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
-                    print(f"❌ Code Error: {e}") # This will show us WHY it failed
+                    print(f"❌ Code Error: {e}")
                     final_answer = "Error"
                 finally:
                     sys.stdout = old_stdout
