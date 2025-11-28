@@ -18,7 +18,7 @@ if sys.platform == 'win32':
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 AIPIPE_API_KEY = os.environ.get("AIPIPE_API_KEY")
 
-# Setup AIPipe Client (Backup)
+# Setup AIPipe Client
 aipipe_client = None
 if AIPIPE_API_KEY:
     try:
@@ -29,7 +29,6 @@ if AIPIPE_API_KEY:
     except:
         pass
 
-# YOUR SECRET
 MY_SECRET = "UNKNOWN"
 
 app = FastAPI()
@@ -44,47 +43,34 @@ def clean_json_text(text):
 
 async def get_llm_plan(prompt_text):
     """
-    1. Tries multiple Gemini models via Direct HTTP.
-    2. If all fail, tries AIPipe.
+    Tries Gemini (v1 Stable) then AIPipe.
     """
     
-    # --- STRATEGY A: GEMINI (Try Multiple Models) ---
+    # --- STRATEGY A: GEMINI (v1 Stable Endpoint) ---
     if GEMINI_API_KEY:
-        # We try these models in order. One WILL work.
-        models_to_try = [
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-flash-001",
-            "gemini-pro",
-            "gemini-1.0-pro"
-        ]
-
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt_text}]
-            }]
-        }
-        headers = {"Content-Type": "application/json"}
-
-        for model_name in models_to_try:
-            try:
-                print(f"🤖 Trying Gemini Model: {model_name}...")
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-                
-                response = requests.post(url, json=payload, headers=headers)
-                
-                if response.status_code == 200:
-                    resp_data = response.json()
-                    try:
-                        raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
-                        print(f"✅ Success with {model_name}!")
-                        return json.loads(clean_json_text(raw_text))
-                    except:
-                        pass # JSON parse error, try next model
-                else:
-                    print(f"⚠️ {model_name} Failed ({response.status_code})")
-            except Exception as e:
-                print(f"⚠️ Error on {model_name}: {e}")
+        try:
+            print(f"🤖 Trying Gemini Pro (v1 Stable)...")
+            # CHANGED: Using 'v1' instead of 'v1beta'
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+            
+            payload = {
+                "contents": [{
+                    "parts": [{"text": prompt_text}]
+                }]
+            }
+            headers = {"Content-Type": "application/json"}
+            
+            response = requests.post(url, json=payload, headers=headers)
+            
+            if response.status_code == 200:
+                resp_data = response.json()
+                raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
+                print(f"✅ Success with Gemini v1!")
+                return json.loads(clean_json_text(raw_text))
+            else:
+                print(f"⚠️ Gemini v1 Failed ({response.status_code}): {response.text}")
+        except Exception as e:
+            print(f"⚠️ Error on Gemini: {e}")
 
     # --- STRATEGY B: AIPIPE (Fallback) ---
     if aipipe_client:
@@ -112,13 +98,11 @@ async def solve_quiz(task_url: str, email: str, secret: str):
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
-            # 1. Scrape
             await page.goto(task_url, timeout=60000)
             await page.wait_for_load_state("networkidle")
             content = await page.evaluate("document.body.innerText")
             print(f"📄 Scraped: {content[:100]}...")
 
-            # 2. Plan
             prompt = f"""
             You are a Data Science Agent.
             QUIZ TEXT:
@@ -141,14 +125,12 @@ async def solve_quiz(task_url: str, email: str, secret: str):
 
             plan = await get_llm_plan(prompt)
             if not plan:
-                print("❌ Fatal: No Plan generated.")
                 return
 
             submission_url = plan.get("submission_url")
             final_answer = plan.get("text_answer")
             python_code = plan.get("python_code")
 
-            # 3. Execute Code
             if python_code and python_code != "null":
                 print("⚙️ Executing Python Code...")
                 old_stdout = sys.stdout
@@ -165,7 +147,6 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                     sys.stdout = old_stdout
                 print(f"✅ Computed Answer: {final_answer}")
 
-            # 4. Submit
             submit_payload = {
                 "email": email,
                 "secret": secret,
@@ -177,7 +158,6 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             resp = requests.post(submission_url, json=submit_payload)
             print(f"✅ Status: {resp.status_code}")
 
-            # 5. RECURSIVE LOOP
             try:
                 resp_json = resp.json()
                 next_url = resp_json.get("url")
