@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+playwright
+google-generativeai
+openai
+requests
+pandas
+python-multipart
+pydantic
