@@ -7,6 +7,7 @@ import pandas as pd
 import io
 import re
 import bs4
+import ssl
 from urllib.parse import urljoin
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
@@ -16,6 +17,9 @@ from openai import OpenAI
 # --- WINDOWS FIX ---
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+# --- SSL FIX (Crucial for CSV downloads) ---
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # --- CONFIGURATION ---
 # !!! PASTE YOUR GROQ KEY HERE !!!
@@ -28,7 +32,6 @@ if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
             api_key=GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1"
         )
-        print("✅ Groq Client Configured")
     except Exception as e:
         print(f"❌ Groq Setup Error: {e}")
 
@@ -69,7 +72,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
-            # 1. Scrape with Link Extraction
+            # 1. Scrape
             await page.goto(task_url, timeout=60000)
             await page.wait_for_load_state("networkidle")
             await asyncio.sleep(1) 
@@ -86,7 +89,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (SIMPLIFIED PROMPT FOR RAW OUTPUT)
+            # 2. Plan (DEBUG PROMPT)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -101,25 +104,25 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                - If relative ("/submit"), convert to absolute using `urljoin`.
             
             2. SOLVE THE QUESTION:
-               - IF SCRAPING A LINK (e.g. "Get secret code from..."):
-                 - Use `requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
-                 - **CRITICAL:** Just `print(response.text.strip())`. Do not try to parse HTML unless explicitly asked.
                - IF CSV/EXCEL:
-                 - Look for Filters in text (e.g. "Cutoff").
-                 - Load CSV, Filter, Calculate.
-                 - Print ONLY the final answer value.
+                 - Code MUST: `df = pd.read_csv(url)`
+                 - Filter: If text says "Cutoff X" or "Value > X", apply `df = df[df['value'] > X]` (Check column names first!).
+                 - Answer: Print the sum/count/mean.
+               - IF SCRAPING A LINK:
+                 - Code MUST: `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
+                 - If HTML, try to extract text. If not found, print "SECRET_NOT_FOUND".
+               - PRINT ONLY THE FINAL ANSWER.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... headers={{'User-Agent': 'Mozilla/5.0'}}... resp = requests.get('url', headers=headers)... print(resp.text.strip())",
+                "python_code": "import requests... headers={{'User-Agent': 'Mozilla/5.0'}}... df = pd.read_csv('url')... print(ans)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
 
             plan = await get_llm_plan(prompt)
             if not plan:
-                print("❌ Fatal: No Plan generated.")
                 return
 
             submission_url = plan.get("submission_url")
@@ -151,8 +154,10 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                     exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
-                    print(f"❌ Code Error: {e}")
-                    final_answer = "Error"
+                    # DEBUG: Print the actual error so we can see it in logs
+                    error_msg = f"Error: {str(e)}"
+                    print(error_msg) 
+                    final_answer = error_msg
                 finally:
                     sys.stdout = old_stdout
                 print(f"✅ Computed Answer: {final_answer}")
