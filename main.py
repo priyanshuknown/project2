@@ -85,7 +85,8 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (SMARTER PROMPT)
+            # 2. Plan
+            # FIX: We use {{ }} to escape braces so Python doesn't crash
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -106,7 +107,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                  - Check the text for FILTERS (e.g. "Cutoff: 1000", "Value > 50").
                  - Filter the DataFrame BEFORE calculating the sum/average.
                - IF SCRAPING A LINK:
-                 - Use `requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})`
+                 - Use `requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
                  - If the result is HTML, extract ONLY the secret code/text (do not return <div> tags).
                - WRITE PYTHON CODE to do this.
                - Print ONLY the final answer value.
@@ -114,7 +115,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... headers={'User-Agent': 'Mozilla/5.0'}... df = pd.read_csv('url')... filtered = df[df['val'] > cutoff]... print(ans)",
+                "python_code": "import requests... headers={{'User-Agent': 'Mozilla/5.0'}}... df = pd.read_csv('url')... filtered = df[df['val'] > cutoff]... print(ans)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
