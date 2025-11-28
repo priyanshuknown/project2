@@ -78,14 +78,14 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             content = await page.evaluate("document.body.innerText")
             links = await page.evaluate("""
                 Array.from(document.querySelectorAll('a')).map(a => 
-                    `[LINK: ${a.innerText}] (URL: ${a.href})`
+                    `[LINK_TEXT: ${a.innerText}] (URL: ${a.href})`
                 ).join('\\n')
             """)
             
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (FORCE PRINT PROMPT)
+            # 2. Plan (DEFENSIVE PROMPT)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -101,19 +101,24 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             
             2. SOLVE THE QUESTION:
                - IF CSV/EXCEL:
-                 - `df = pd.read_csv(url)`
-                 - Clean columns: `df.columns = df.columns.str.strip()`
-                 - Filter & Calculate.
-                 - **CRITICAL:** `print(final_result)`
+                 - Look for "Cutoff" or "Filter" in text.
+                 - Code MUST: 
+                   1. `df = pd.read_csv(url)`
+                   2. `df.columns = df.columns.str.lower().str.strip()` (Force lowercase!)
+                   3. Look for 'value', 'values', 'count', etc.
+                   4. Filter & Calculate.
+                   5. `print(result)`
                - IF SCRAPING A LINK:
-                 - `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
-                 - **CRITICAL:** Just print the text: `print(resp.text)`
-                 - Do NOT assume HTML structure unless asked.
+                 - Find the URL in "LINKS FOUND" that matches the instructions.
+                 - Code MUST: `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
+                 - **CRITICAL:** `print(bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip())`
+                 - This strips HTML tags so we get the clean secret code.
+               - PRINT ONLY THE FINAL ANSWER.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... resp = requests.get(url)... print(resp.text)",
+                "python_code": "import requests... import bs4... df = pd.read_csv(url)... print(ans)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -148,12 +153,6 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                     final_answer = f"Error: {e}"
                 finally:
                     sys.stdout = old_stdout
-                
-                # FAILSAFE: If code printed nothing, assume error or trying to be silent
-                if not final_answer:
-                    print("⚠️ Warning: Code produced no output. Using default.")
-                    final_answer = "NO_OUTPUT_FROM_CODE"
-
                 print(f"✅ Computed Answer: {final_answer}")
 
             # 4. Submit
