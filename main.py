@@ -1,5 +1,7 @@
 import os
 import json
+import sys          # <--- ADD THIS
+import asyncio
 import requests
 import pandas as pd
 import io
@@ -11,6 +13,8 @@ import google.generativeai as genai
 from openai import OpenAI
 
 # --- CONFIGURATION ---
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # 1. Setup Gemini (Primary)
 GEMINI_API_KEY = os.environ.get("AIzaSyAoqeUEfAYYwUlLEuxJFLEmI0as0DMEiOc")
