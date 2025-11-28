@@ -17,7 +17,7 @@ if sys.platform == 'win32':
 
 # --- CONFIGURATION ---
 # !!! PASTE YOUR GROQ KEY HERE !!!
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "PASTE_YOUR_GROQ_KEY_HERE"
 
 client = None
 if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
@@ -187,4 +187,5 @@ async def solve_quiz(task_url: str, email: str, secret: str):
 async def run_quiz_endpoint(payload: TaskPayload, background_tasks: BackgroundTasks):
     if payload.secret != MY_SECRET:
         raise HTTPException(status_code=403, detail="Invalid Secret")
-    background_tasks.add_task(solve_quiz, payload.url, payload
+    background_tasks.add_task(solve_quiz, payload.url, payload.email, payload.secret)
+    return {"message": "Task started"}
