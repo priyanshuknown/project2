@@ -1,9 +1,10 @@
 fastapi
 uvicorn
 playwright
-google-generativeai>=0.8.3  
+google-generativeai>=0.8.3
 openai
 requests
 pandas
 python-multipart
 pydantic
+beautifulsoup4
