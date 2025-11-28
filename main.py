@@ -8,23 +8,17 @@ import io
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
-import google.generativeai as genai
 from openai import OpenAI
 
-# --- WINDOWS FIX (Keeps it working on your laptop) ---
+# --- WINDOWS FIX ---
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # --- CONFIGURATION ---
-
-# 1. Setup Gemini
-# We use the NAME of the variable, not the value.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-# 2. Setup AIPipe
 AIPIPE_API_KEY = os.environ.get("AIPIPE_API_KEY")
+
+# Setup AIPipe Client
 aipipe_client = None
 if AIPIPE_API_KEY:
     aipipe_client = OpenAI(
@@ -32,9 +26,9 @@ if AIPIPE_API_KEY:
         base_url="https://aipipe.org/openai/v1"
     )
 
-# 3. Your Secret
-# Make sure this matches what you put in the Google Form
-MY_SECRET = os.environ.get("MY_SECRET")
+# YOUR SECRET
+MY_SECRET = "UNKNOWN"
+
 app = FastAPI()
 
 class TaskPayload(BaseModel):
@@ -46,16 +40,38 @@ def clean_json_text(text):
     return text.replace("```json", "").replace("```", "").strip()
 
 async def get_llm_plan(prompt_text):
-    # Attempt 1: Gemini
-    try:
-        print("🤖 Asking Gemini...")
-        model = genai.GenerativeModel('gemini-pro')
-        response = model.generate_content(prompt_text)
-        return json.loads(clean_json_text(response.text))
-    except Exception as e:
-        print(f"⚠️ Gemini failed ({e}). Switching to AIPipe...")
+    """
+    Tries Gemini via Raw REST API (No SDK). Fallback to AIPipe.
+    """
+    # --- ATTEMPT 1: GEMINI (RAW HTTP) ---
+    if GEMINI_API_KEY:
+        try:
+            print("🤖 Asking Gemini (Direct HTTP)...")
+            # Using standard gemini-1.5-flash endpoint
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [{
+                    "parts": [{"text": prompt_text}]
+                }]
+            }
+            headers = {"Content-Type": "application/json"}
+            
+            # Send Request
+            response = requests.post(url, json=payload, headers=headers)
+            
+            # Check if successful
+            if response.status_code == 200:
+                resp_data = response.json()
+                # Extract text from complex JSON structure
+                raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
+                return json.loads(clean_json_text(raw_text))
+            else:
+                print(f"⚠️ Gemini HTTP Error: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            print(f"⚠️ Gemini failed: {e}")
 
-    # Attempt 2: AIPipe
+    # --- ATTEMPT 2: AIPIPE (FALLBACK) ---
     if aipipe_client:
         try:
             print("🤖 Asking AIPipe...")
@@ -74,9 +90,6 @@ async def get_llm_plan(prompt_text):
     return None
 
 async def solve_quiz(task_url: str, email: str, secret: str):
-    """
-    Solves the quiz recursively. If the server returns a new URL, it loops.
-    """
     print(f"\n🚀 STARTING TASK: {task_url}")
     
     async with async_playwright() as p:
@@ -112,6 +125,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
 
             plan = await get_llm_plan(prompt)
             if not plan:
+                print("❌ Fatal: No Plan generated.")
                 return
 
             submission_url = plan.get("submission_url")
@@ -147,13 +161,12 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             resp = requests.post(submission_url, json=submit_payload)
             print(f"✅ Status: {resp.status_code}")
 
-            # 5. RECURSIVE LOOP (Crucial for Project Requirements)
+            # 5. RECURSIVE LOOP
             try:
                 resp_json = resp.json()
                 next_url = resp_json.get("url")
                 if next_url:
                     print(f"🔄 Next Question Found! Proceeding to: {next_url}")
-                    # Recursively solve the next question
                     await solve_quiz(next_url, email, secret)
                 else:
                     print("🏁 Quiz Complete.")
