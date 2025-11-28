@@ -49,7 +49,7 @@ async def get_llm_plan(prompt_text):
     # Attempt 1: Gemini
     try:
         print("🤖 Asking Gemini...")
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         response = model.generate_content(prompt_text)
         return json.loads(clean_json_text(response.text))
     except Exception as e:
