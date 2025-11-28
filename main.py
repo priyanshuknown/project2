@@ -5,7 +5,7 @@ import json
 import requests
 import pandas as pd
 import io
-from urllib.parse import urljoin  # <--- ADDED THIS
+from urllib.parse import urljoin
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
@@ -16,11 +16,9 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # --- CONFIGURATION ---
+# !!! PASTE YOUR GROQ KEY HERE !!!
+GROQ_API_KEY = "PASTE_YOUR_GROQ_KEY_HERE"
 
-# !!! PASTE YOUR GROQ API KEY HERE !!!
-GROQ_API_KEY = "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"
-
-# Setup Groq Client
 client = None
 if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
     try:
@@ -28,11 +26,9 @@ if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
             api_key=GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1"
         )
-        print("✅ Groq Client Configured")
     except Exception as e:
         print(f"❌ Groq Setup Error: {e}")
 
-# YOUR SECRET
 MY_SECRET = "UNKNOWN"
 
 app = FastAPI()
@@ -47,15 +43,13 @@ def clean_json_text(text):
 
 async def get_llm_plan(prompt_text):
     if not client:
-        print("❌ Error: Groq Client is missing.")
         return None
-
     try:
         print("🤖 Asking Groq (Llama 3.3)...")
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a helpful data assistant. Return valid JSON only."},
+                {"role": "system", "content": "You are a precise data extraction agent. Output valid JSON only."},
                 {"role": "user", "content": prompt_text}
             ],
             response_format={"type": "json_object"}
@@ -78,42 +72,47 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             content = await page.evaluate("document.body.innerText")
             print(f"📄 Scraped: {content[:100]}...")
 
-            # 2. Plan (Updated Prompt to handle relative URLs)
+            # 2. Plan (UPDATED PROMPT)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
             
-            QUIZ TEXT:
+            PAGE TEXT:
             ---
             {content}
             ---
             
-            TASKS:
-            1. Identify 'submission_url'. (If it is relative like '/submit', convert it to absolute using the Current Page URL).
-            2. Solve the question.
-               - If downloading files/scraping pages relative to this page, construct ABSOLUTE URLs first.
-               - If data analysis (CSV/PDF, math), WRITE PYTHON CODE.
-               - Use `requests`, `pandas`. Print final answer.
-               - If text only, provide answer.
+            YOUR TASKS:
+            1. IDENTIFY SUBMISSION URL:
+               - Look for "Post to..." or "Submit to...".
+               - If it is relative (e.g. "/submit"), use `urljoin` in your head to make it absolute (e.g. "https://domain.com/submit").
+               - WARNING: "/submit" usually means the ROOT path, not relative to the current folder.
+            
+            2. SOLVE THE QUESTION:
+               - Does the text say "Scrape /some-path"?
+                 -> You MUST write Python code to `requests.get()` that specific URL.
+                 -> Do NOT return the HTML of the main page as the answer.
+               - Does it require math/counting?
+                 -> Write Python code to calculate it.
+               - Code Constraints: Use `pd`, `requests`, `urljoin`. Print the FINAL SINGLE VALUE only.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... print(ans)", 
-                "text_answer": "answer"
+                "python_code": "import requests... url = urljoin(task_url, '/path')... resp = requests.get(url)... print(resp.text)",
+                "text_answer": "answer_if_no_code_needed"
             }}
             """
 
             plan = await get_llm_plan(prompt)
             if not plan:
-                print("❌ Fatal: No Plan generated.")
                 return
 
             submission_url = plan.get("submission_url")
             final_answer = plan.get("text_answer")
             python_code = plan.get("python_code")
 
-            # --- FIX: Ensure URL is absolute ---
+            # Validate Submission URL (Fix common relative path issues)
             if submission_url and not submission_url.startswith("http"):
                 submission_url = urljoin(task_url, submission_url)
                 print(f"🔗 Fixed Relative Submission URL: {submission_url}")
@@ -125,13 +124,14 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
                 try:
-                    # Pass 'urljoin' and 'task_url' to the code environment
+                    # Pass context variables to the code
                     exec_globals = {
                         'pd': pd, 
                         'requests': requests, 
                         'print': print, 
                         'urljoin': urljoin,
-                        'task_url': task_url
+                        'task_url': task_url,
+                        'email': email
                     }
                     exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
@@ -159,10 +159,8 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 resp_json = resp.json()
                 next_url = resp_json.get("url")
                 if next_url:
-                    # FIX: Resolve next_url if it is relative
                     if not next_url.startswith("http"):
                         next_url = urljoin(task_url, next_url)
-                        
                     print(f"🔄 Next Question Found! Proceeding to: {next_url}")
                     await solve_quiz(next_url, email, secret)
                 else:
