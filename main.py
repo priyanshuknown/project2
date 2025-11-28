@@ -26,7 +26,7 @@ if GEMINI_API_KEY:
 AIPIPE_API_KEY = os.environ.get("eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjI0ZjIwMDUzNjVAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.jTSZ0cfZb5tDCakKTBeEFjM8K5gmBPTqP-Ku39MbkPw")
 aipipe_client = OpenAI(
     api_key=AIPIPE_API_KEY,
-    base_url="https://api.langpipe.ai/v1" # <--- VERIFY THIS URL
+    base_url="https://aipipe.org/openai/v1" # <--- VERIFY THIS URL
 )
 
 # 3. Your Secret
