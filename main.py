@@ -5,6 +5,7 @@ import json
 import requests
 import pandas as pd
 import io
+import re
 from urllib.parse import urljoin
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
@@ -70,22 +71,21 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             # 1. Scrape with Link Extraction
             await page.goto(task_url, timeout=60000)
             await page.wait_for_load_state("networkidle")
-            await asyncio.sleep(1) # Wait for JS
+            await asyncio.sleep(1) 
             
-            # Get text
             content = await page.evaluate("document.body.innerText")
             
-            # Get Links (Crucial for CSV/PDF tasks)
+            # Extract Links for the LLM
             links = await page.evaluate("""
                 Array.from(document.querySelectorAll('a')).map(a => 
-                    `[LINK: ${a.innerText}](${a.href})`
+                    `[LINK_TEXT: ${a.innerText}] (URL: ${a.href})`
                 ).join('\\n')
             """)
             
-            full_context = f"{content}\n\n--- LINKS FOUND ---\n{links}"
-            print(f"📄 Scraped Content (with links):\n{full_context[:500]}...")
+            full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
+            print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan
+            # 2. Plan (SMARTER PROMPT)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -101,16 +101,20 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                - If relative ("/submit"), convert to absolute using `urljoin`.
             
             2. SOLVE THE QUESTION:
-               - Look at the "LINKS FOUND" section.
-               - If the task is "Sum of column in CSV" or "Parse PDF", use the URL from the LINKS section.
-               - If the task is "Scrape /path", construct the URL using `urljoin`.
-               - WRITE PYTHON CODE to download and process the data.
-               - Code must print the FINAL ANSWER only.
+               - Look for LINKS to CSVs, PDFs, or Data pages.
+               - IF CSV/EXCEL:
+                 - Check the text for FILTERS (e.g. "Cutoff: 1000", "Value > 50").
+                 - Filter the DataFrame BEFORE calculating the sum/average.
+               - IF SCRAPING A LINK:
+                 - Use `requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})`
+                 - If the result is HTML, extract ONLY the secret code/text (do not return <div> tags).
+               - WRITE PYTHON CODE to do this.
+               - Print ONLY the final answer value.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... df = pd.read_csv('url')... print(ans)",
+                "python_code": "import requests... headers={'User-Agent': 'Mozilla/5.0'}... df = pd.read_csv('url')... filtered = df[df['val'] > cutoff]... print(ans)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -124,7 +128,6 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             final_answer = plan.get("text_answer")
             python_code = plan.get("python_code")
 
-            # Fix relative submission URL
             if submission_url and not submission_url.startswith("http"):
                 submission_url = urljoin(task_url, submission_url)
 
@@ -141,7 +144,8 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                         'print': print, 
                         'urljoin': urljoin,
                         'task_url': task_url,
-                        'email': email
+                        'email': email,
+                        're': re
                     }
                     exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
