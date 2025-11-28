@@ -34,8 +34,7 @@ if AIPIPE_API_KEY:
 
 # 3. Your Secret
 # Make sure this matches what you put in the Google Form
-MY_SECRET = "CHANGE_THIS_TO_YOUR_SECRET"
-
+MY_SECRET = os.environ.get("MY_SECRET")
 app = FastAPI()
 
 class TaskPayload(BaseModel):
