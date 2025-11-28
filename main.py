@@ -15,29 +15,22 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # --- CONFIGURATION ---
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# !!! PASTE YOUR NEW AIPIPE KEY HERE DIRECTLY !!!
-# This bypasses the Render Environment Variables so we KNOW it uses the right key.
-AIPIPE_HARDCODED_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6InByaXlhbnNoY2hhdWRoYXJ5MTc2QGdtYWlsLmNvbSJ9.Jvi9Pdk1hYvFjGd4RxzGfwCZRGRWZTQQn0k8Vbt4Q8k" 
+# !!! PASTE YOUR GROQ API KEY HERE !!!
+# Get it for free at https://console.groq.com/keys
+GROQ_API_KEY = "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"
 
-# Setup AIPipe Client
-aipipe_client = None
-if AIPIPE_HARDCODED_KEY and "PASTE_YOUR" not in AIPIPE_HARDCODED_KEY:
-    print("✅ Using Hardcoded AIPipe Key")
+# Setup Groq Client
+client = None
+if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
     try:
-        aipipe_client = OpenAI(
-            api_key=AIPIPE_HARDCODED_KEY,
-            base_url="https://aipipe.org/openai/v1"
+        client = OpenAI(
+            api_key=GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1"
         )
+        print("✅ Groq Client Configured")
     except Exception as e:
-        print(f"❌ Error setting up AIPipe: {e}")
-else:
-    # Fallback to Env Var if hardcode is skipped
-    env_key = os.environ.get("AIPIPE_API_KEY")
-    if env_key:
-        print("Using Environment Variable for AIPipe")
-        aipipe_client = OpenAI(api_key=env_key, base_url="https://aipipe.org/openai/v1")
+        print(f"❌ Groq Setup Error: {e}")
 
 # YOUR SECRET
 MY_SECRET = "UNKNOWN"
@@ -54,65 +47,27 @@ def clean_json_text(text):
 
 async def get_llm_plan(prompt_text):
     """
-    1. Tries multiple Gemini models (v1beta AND v1).
-    2. If all fail, tries AIPipe (Hardcoded Key).
+    Uses Groq (Llama 3) to generate the plan.
     """
-    
-    # --- STRATEGY A: GEMINI (Try Multiple Models & Endpoints) ---
-    if GEMINI_API_KEY:
-        # List of (Model Name, API Version)
-        configs_to_try = [
-            ("gemini-1.5-flash", "v1beta"),
-            ("gemini-1.5-flash-latest", "v1beta"),
-            ("gemini-pro", "v1beta"),
-            ("gemini-pro", "v1") # Stable endpoint often fixes 404s
-        ]
+    if not client:
+        print("❌ Error: Groq Client is missing. Check API Key.")
+        return None
 
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt_text}]
-            }]
-        }
-        headers = {"Content-Type": "application/json"}
-
-        for model, version in configs_to_try:
-            try:
-                print(f"🤖 Trying Gemini: {model} ({version})...")
-                url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={GEMINI_API_KEY}"
-                
-                response = requests.post(url, json=payload, headers=headers)
-                
-                if response.status_code == 200:
-                    resp_data = response.json()
-                    try:
-                        raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
-                        print(f"✅ Success with {model}!")
-                        return json.loads(clean_json_text(raw_text))
-                    except:
-                        pass
-                else:
-                    print(f"⚠️ Failed ({response.status_code})")
-            except Exception as e:
-                print(f"⚠️ Error: {e}")
-
-    # --- STRATEGY B: AIPIPE (The Backup) ---
-    if aipipe_client:
-        try:
-            print("🤖 Asking AIPipe...")
-            response = aipipe_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Return valid JSON only."},
-                    {"role": "user", "content": prompt_text}
-                ],
-                response_format={"type": "json_object"}
-            )
-            return json.loads(response.choices[0].message.content)
-        except Exception as e:
-            print(f"❌ AIPipe failed: {e}")
-
-    print("❌ ALL AI MODELS FAILED.")
-    return None
+    try:
+        print("🤖 Asking Groq (Llama 3.3)...")
+        response = client.chat.completions.create(
+            # Using Llama 3.3 70B (Very smart, free on Groq)
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a helpful data assistant. Return valid JSON only. Do not output markdown blocks."},
+                {"role": "user", "content": prompt_text}
+            ],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"❌ Groq Failed: {e}")
+        return None
 
 async def solve_quiz(task_url: str, email: str, secret: str):
     print(f"\n🚀 STARTING TASK: {task_url}")
@@ -121,11 +76,13 @@ async def solve_quiz(task_url: str, email: str, secret: str):
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
+            # 1. Scrape
             await page.goto(task_url, timeout=60000)
             await page.wait_for_load_state("networkidle")
             content = await page.evaluate("document.body.innerText")
             print(f"📄 Scraped: {content[:100]}...")
 
+            # 2. Plan
             prompt = f"""
             You are a Data Science Agent.
             QUIZ TEXT:
@@ -148,12 +105,14 @@ async def solve_quiz(task_url: str, email: str, secret: str):
 
             plan = await get_llm_plan(prompt)
             if not plan:
+                print("❌ Fatal: No Plan generated.")
                 return
 
             submission_url = plan.get("submission_url")
             final_answer = plan.get("text_answer")
             python_code = plan.get("python_code")
 
+            # 3. Execute Code
             if python_code and python_code != "null":
                 print("⚙️ Executing Python Code...")
                 old_stdout = sys.stdout
@@ -170,6 +129,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                     sys.stdout = old_stdout
                 print(f"✅ Computed Answer: {final_answer}")
 
+            # 4. Submit
             submit_payload = {
                 "email": email,
                 "secret": secret,
@@ -181,6 +141,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             resp = requests.post(submission_url, json=submit_payload)
             print(f"✅ Status: {resp.status_code}")
 
+            # 5. RECURSIVE LOOP
             try:
                 resp_json = resp.json()
                 next_url = resp_json.get("url")
