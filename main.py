@@ -26,6 +26,7 @@ if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
             api_key=GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1"
         )
+        print("✅ Groq Client Configured")
     except Exception as e:
         print(f"❌ Groq Setup Error: {e}")
 
@@ -66,13 +67,15 @@ async def solve_quiz(task_url: str, email: str, secret: str):
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
-            # 1. Scrape
+            # 1. Scrape (With Extra Wait)
             await page.goto(task_url, timeout=60000)
             await page.wait_for_load_state("networkidle")
+            await asyncio.sleep(2) # <--- ADDED WAIT to ensure JS text renders
+            
             content = await page.evaluate("document.body.innerText")
-            print(f"📄 Scraped: {content[:100]}...")
+            print(f"📄 Scraped (First 500 chars):\n{content[:500]}\n...")
 
-            # 2. Plan (UPDATED PROMPT)
+            # 2. Plan
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -85,37 +88,32 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             YOUR TASKS:
             1. IDENTIFY SUBMISSION URL:
                - Look for "Post to..." or "Submit to...".
-               - If it is relative (e.g. "/submit"), use `urljoin` in your head to make it absolute (e.g. "https://domain.com/submit").
-               - WARNING: "/submit" usually means the ROOT path, not relative to the current folder.
+               - If relative ("/submit"), convert to absolute using CURRENT PAGE URL.
             
             2. SOLVE THE QUESTION:
-               - Does the text say "Scrape /some-path"?
-                 -> You MUST write Python code to `requests.get()` that specific URL.
-                 -> Do NOT return the HTML of the main page as the answer.
-               - Does it require math/counting?
-                 -> Write Python code to calculate it.
-               - Code Constraints: Use `pd`, `requests`, `urljoin`. Print the FINAL SINGLE VALUE only.
+               - If it asks for a calculation (sum, count, etc.), WRITE PYTHON CODE.
+               - If it asks to download a file, WRITE PYTHON CODE.
+               - Code must print the FINAL ANSWER only.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... url = urljoin(task_url, '/path')... resp = requests.get(url)... print(resp.text)",
+                "python_code": "import requests... print(ans)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
 
             plan = await get_llm_plan(prompt)
             if not plan:
+                print("❌ Fatal: No Plan generated.")
                 return
 
             submission_url = plan.get("submission_url")
             final_answer = plan.get("text_answer")
             python_code = plan.get("python_code")
 
-            # Validate Submission URL (Fix common relative path issues)
             if submission_url and not submission_url.startswith("http"):
                 submission_url = urljoin(task_url, submission_url)
-                print(f"🔗 Fixed Relative Submission URL: {submission_url}")
 
             # 3. Execute Code
             if python_code and python_code != "null":
@@ -124,7 +122,6 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
                 try:
-                    # Pass context variables to the code
                     exec_globals = {
                         'pd': pd, 
                         'requests': requests, 
@@ -150,9 +147,11 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 "answer": final_answer 
             }
             
-            print(f"📤 Submitting to {submission_url}...")
+            # --- DEBUG LOG ---
+            print(f"📤 Submitting Payload: {json.dumps(submit_payload)}")
+            
             resp = requests.post(submission_url, json=submit_payload)
-            print(f"✅ Status: {resp.status_code}")
+            print(f"✅ Status: {resp.status_code} | Response: {resp.text}")
 
             # 5. RECURSIVE LOOP
             try:
