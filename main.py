@@ -16,19 +16,30 @@ if sys.platform == 'win32':
 
 # --- CONFIGURATION ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-AIPIPE_API_KEY = os.environ.get("AIPIPE_API_KEY")
+
+# !!! PASTE YOUR NEW AIPIPE KEY HERE DIRECTLY !!!
+# This bypasses the Render Environment Variables so we KNOW it uses the right key.
+AIPIPE_HARDCODED_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6InByaXlhbnNoY2hhdWRoYXJ5MTc2QGdtYWlsLmNvbSJ9.Jvi9Pdk1hYvFjGd4RxzGfwCZRGRWZTQQn0k8Vbt4Q8k" 
 
 # Setup AIPipe Client
 aipipe_client = None
-if AIPIPE_API_KEY:
+if AIPIPE_HARDCODED_KEY and "PASTE_YOUR" not in AIPIPE_HARDCODED_KEY:
+    print("✅ Using Hardcoded AIPipe Key")
     try:
         aipipe_client = OpenAI(
-            api_key=AIPIPE_API_KEY,
+            api_key=AIPIPE_HARDCODED_KEY,
             base_url="https://aipipe.org/openai/v1"
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"❌ Error setting up AIPipe: {e}")
+else:
+    # Fallback to Env Var if hardcode is skipped
+    env_key = os.environ.get("AIPIPE_API_KEY")
+    if env_key:
+        print("Using Environment Variable for AIPipe")
+        aipipe_client = OpenAI(api_key=env_key, base_url="https://aipipe.org/openai/v1")
 
+# YOUR SECRET
 MY_SECRET = "UNKNOWN"
 
 app = FastAPI()
@@ -43,36 +54,48 @@ def clean_json_text(text):
 
 async def get_llm_plan(prompt_text):
     """
-    Tries Gemini (v1 Stable) then AIPipe.
+    1. Tries multiple Gemini models (v1beta AND v1).
+    2. If all fail, tries AIPipe (Hardcoded Key).
     """
     
-    # --- STRATEGY A: GEMINI (v1 Stable Endpoint) ---
+    # --- STRATEGY A: GEMINI (Try Multiple Models & Endpoints) ---
     if GEMINI_API_KEY:
-        try:
-            print(f"🤖 Trying Gemini Pro (v1 Stable)...")
-            # CHANGED: Using 'v1' instead of 'v1beta'
-            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-            
-            payload = {
-                "contents": [{
-                    "parts": [{"text": prompt_text}]
-                }]
-            }
-            headers = {"Content-Type": "application/json"}
-            
-            response = requests.post(url, json=payload, headers=headers)
-            
-            if response.status_code == 200:
-                resp_data = response.json()
-                raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
-                print(f"✅ Success with Gemini v1!")
-                return json.loads(clean_json_text(raw_text))
-            else:
-                print(f"⚠️ Gemini v1 Failed ({response.status_code}): {response.text}")
-        except Exception as e:
-            print(f"⚠️ Error on Gemini: {e}")
+        # List of (Model Name, API Version)
+        configs_to_try = [
+            ("gemini-1.5-flash", "v1beta"),
+            ("gemini-1.5-flash-latest", "v1beta"),
+            ("gemini-pro", "v1beta"),
+            ("gemini-pro", "v1") # Stable endpoint often fixes 404s
+        ]
 
-    # --- STRATEGY B: AIPIPE (Fallback) ---
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt_text}]
+            }]
+        }
+        headers = {"Content-Type": "application/json"}
+
+        for model, version in configs_to_try:
+            try:
+                print(f"🤖 Trying Gemini: {model} ({version})...")
+                url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={GEMINI_API_KEY}"
+                
+                response = requests.post(url, json=payload, headers=headers)
+                
+                if response.status_code == 200:
+                    resp_data = response.json()
+                    try:
+                        raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
+                        print(f"✅ Success with {model}!")
+                        return json.loads(clean_json_text(raw_text))
+                    except:
+                        pass
+                else:
+                    print(f"⚠️ Failed ({response.status_code})")
+            except Exception as e:
+                print(f"⚠️ Error: {e}")
+
+    # --- STRATEGY B: AIPIPE (The Backup) ---
     if aipipe_client:
         try:
             print("🤖 Asking AIPipe...")
