@@ -18,13 +18,16 @@ if sys.platform == 'win32':
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 AIPIPE_API_KEY = os.environ.get("AIPIPE_API_KEY")
 
-# Setup AIPipe Client
+# Setup AIPipe Client (Backup)
 aipipe_client = None
 if AIPIPE_API_KEY:
-    aipipe_client = OpenAI(
-        api_key=AIPIPE_API_KEY,
-        base_url="https://aipipe.org/openai/v1"
-    )
+    try:
+        aipipe_client = OpenAI(
+            api_key=AIPIPE_API_KEY,
+            base_url="https://aipipe.org/openai/v1"
+        )
+    except:
+        pass
 
 # YOUR SECRET
 MY_SECRET = "UNKNOWN"
@@ -41,37 +44,49 @@ def clean_json_text(text):
 
 async def get_llm_plan(prompt_text):
     """
-    Tries Gemini via Raw REST API (No SDK). Fallback to AIPipe.
+    1. Tries multiple Gemini models via Direct HTTP.
+    2. If all fail, tries AIPipe.
     """
-    # --- ATTEMPT 1: GEMINI (RAW HTTP) ---
+    
+    # --- STRATEGY A: GEMINI (Try Multiple Models) ---
     if GEMINI_API_KEY:
-        try:
-            print("🤖 Asking Gemini (Direct HTTP)...")
-            # CHANGED TO GEMINI-PRO (Safest Model)
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-            payload = {
-                "contents": [{
-                    "parts": [{"text": prompt_text}]
-                }]
-            }
-            headers = {"Content-Type": "application/json"}
-            
-            # Send Request
-            response = requests.post(url, json=payload, headers=headers)
-            
-            # Check if successful
-            if response.status_code == 200:
-                resp_data = response.json()
-                # Extract text from complex JSON structure
-                raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
-                return json.loads(clean_json_text(raw_text))
-            else:
-                print(f"⚠️ Gemini HTTP Error: {response.status_code} - {response.text}")
-                
-        except Exception as e:
-            print(f"⚠️ Gemini failed: {e}")
+        # We try these models in order. One WILL work.
+        models_to_try = [
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-flash-001",
+            "gemini-pro",
+            "gemini-1.0-pro"
+        ]
 
-    # --- ATTEMPT 2: AIPIPE (FALLBACK) ---
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt_text}]
+            }]
+        }
+        headers = {"Content-Type": "application/json"}
+
+        for model_name in models_to_try:
+            try:
+                print(f"🤖 Trying Gemini Model: {model_name}...")
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+                
+                response = requests.post(url, json=payload, headers=headers)
+                
+                if response.status_code == 200:
+                    resp_data = response.json()
+                    try:
+                        raw_text = resp_data['candidates'][0]['content']['parts'][0]['text']
+                        print(f"✅ Success with {model_name}!")
+                        return json.loads(clean_json_text(raw_text))
+                    except:
+                        pass # JSON parse error, try next model
+                else:
+                    print(f"⚠️ {model_name} Failed ({response.status_code})")
+            except Exception as e:
+                print(f"⚠️ Error on {model_name}: {e}")
+
+    # --- STRATEGY B: AIPIPE (Fallback) ---
     if aipipe_client:
         try:
             print("🤖 Asking AIPipe...")
@@ -86,7 +101,8 @@ async def get_llm_plan(prompt_text):
             return json.loads(response.choices[0].message.content)
         except Exception as e:
             print(f"❌ AIPipe failed: {e}")
-    
+
+    print("❌ ALL AI MODELS FAILED.")
     return None
 
 async def solve_quiz(task_url: str, email: str, secret: str):
