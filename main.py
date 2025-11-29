@@ -4,6 +4,7 @@ import asyncio
 import json
 import requests
 import pandas as pd
+import numpy as np
 import io
 import re
 import bs4
@@ -53,7 +54,7 @@ async def get_llm_plan(prompt_text):
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a precise data extraction agent. Output valid JSON only."},
+                {"role": "system", "content": "You are a senior python developer. You write robust, fault-tolerant code."},
                 {"role": "user", "content": prompt_text}
             ],
             response_format={"type": "json_object"}
@@ -78,14 +79,14 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             content = await page.evaluate("document.body.innerText")
             links = await page.evaluate("""
                 Array.from(document.querySelectorAll('a')).map(a => 
-                    `[LINK_TEXT: ${a.innerText}] (URL: ${a.href})`
+                    `[LINK: ${a.innerText}] (URL: ${a.href})`
                 ).join('\\n')
             """)
             
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (DIRECT OUTPUT PROMPT)
+            # 2. Plan (SMART PROMPT WITH AUTO-CORRECTION LOGIC)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -95,26 +96,38 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             {full_context}
             ---
             
-            YOUR TASKS:
-            1. IDENTIFY SUBMISSION URL:
-               - If relative, convert to absolute using `urljoin`.
+            TASKS:
             
-            2. SOLVE THE QUESTION:
-               - IF CSV/EXCEL:
-                 - `df = pd.read_csv(url)`
-                 - Clean columns: `df.columns = df.columns.str.strip()`
-                 - Filter & Calculate.
-                 - **CRITICAL:** `print(final_result)`
-               - IF SCRAPING A LINK:
-                 - Identify the URL from "LINKS FOUND".
-                 - Code MUST: `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
-                 - **CRITICAL:** `print(resp.text.strip())`
-                 - Just print the raw text content. Do not filter it unless specific instructions exist.
+            1. IDENTIFY SUBMISSION URL:
+               - If relative, make absolute using `urljoin`.
+            
+            2. GENERATE PYTHON CODE TO SOLVE THE QUESTION:
+            
+               **SCENARIO A: CSV/EXCEL PROCESSING**
+               - If the text implies downloading data (CSV/Excel) and summing/filtering:
+               - You MUST write code that handles ANY column name.
+               - Code Template to use:
+                 df = pd.read_csv(data_url)
+                 # Smart Column Detection
+                 numeric_cols = df.select_dtypes(include=[np.number]).columns
+                 target_col = numeric_cols[0] # Just pick the first numeric column
+                 # Check filters in text (e.g. "Cutoff 10000")
+                 if 'cutoff' in text_instructions_lower:
+                     df = df[df[target_col] > cutoff_value]
+                 print(df[target_col].sum())
+            
+               **SCENARIO B: SCRAPING A LINK**
+               - If text says "Scrape [Link]":
+               - Code Template to use:
+                 resp = requests.get(target_url, headers={{'User-Agent': 'Mozilla/5.0'}})
+                 # STRIP HTML TAGS
+                 clean_text = bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip()
+                 print(clean_text)
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})... print(resp.text)",
+                "python_code": "import requests... import pandas as pd... (Your robust code here)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -137,23 +150,21 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
                 try:
+                    # Provide ALL necessary libraries to the execution environment
                     exec_globals = {
-                        'pd': pd, 'requests': requests, 'print': print, 
+                        'pd': pd, 'np': np, 'requests': requests, 'print': print, 
                         'urljoin': urljoin, 'task_url': task_url, 
-                        'email': email, 're': re, 'bs4': bs4, 'io': io, 'json': json
+                        'email': email, 're': re, 'bs4': bs4, 'io': io, 'json': json,
+                        'text_instructions_lower': content.lower() # Helper for the prompt logic
                     }
                     exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
+                    print(f"❌ Code Error: {e}")
                     final_answer = f"Error: {e}"
                 finally:
                     sys.stdout = old_stdout
                 
-                # --- SAFETY NET: Handle Empty Answers ---
-                if not final_answer:
-                    print("⚠️ Code returned empty string. Trying to recover...")
-                    final_answer = "ERROR_NO_OUTPUT" # Prevent 400 error
-
                 print(f"✅ Computed Answer: {final_answer}")
 
             # 4. Submit
