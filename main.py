@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
-from openai import OpenAI
+from openai import AsyncOpenAI  # <--- CHANGED TO ASYNC CLIENT
 
 # --- WINDOWS FIX ---
 if sys.platform == 'win32':
@@ -28,9 +28,11 @@ GROQ_API_KEY = "PASTE_YOUR_GROQ_KEY_HERE"
 client = None
 if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
     try:
-        client = OpenAI(
+        # USE ASYNC CLIENT TO PREVENT FREEZING
+        client = AsyncOpenAI(
             api_key=GROQ_API_KEY,
-            base_url="https://api.groq.com/openai/v1"
+            base_url="https://api.groq.com/openai/v1",
+            timeout=20.0 # <--- Added timeout so it doesn't hang forever
         )
         print("✅ Groq Client Configured")
     except Exception as e:
@@ -50,10 +52,11 @@ async def get_llm_plan(prompt_text):
         return None
     try:
         print("🤖 Asking Groq (Llama 3.3)...")
-        response = client.chat.completions.create(
+        # USE AWAIT HERE
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a precise coding agent. Output valid JSON only. Do not use markdown."},
+                {"role": "system", "content": "You are a precise data extraction agent. Output valid JSON only."},
                 {"role": "user", "content": prompt_text}
             ],
             response_format={"type": "json_object"}
@@ -78,14 +81,14 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             content = await page.evaluate("document.body.innerText")
             links = await page.evaluate("""
                 Array.from(document.querySelectorAll('a')).map(a => 
-                    `[LINK: ${a.innerText}] (URL: ${a.href})`
+                    `[LINK_TEXT: ${a.innerText}] (URL: ${a.href})`
                 ).join('\\n')
             """)
             
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (SIMPLIFIED CODE PROMPT)
+            # 2. Plan
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -96,28 +99,26 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             ---
             
             YOUR TASKS:
-            1. IDENTIFY SUBMISSION URL (use urljoin if relative).
+            1. IDENTIFY SUBMISSION URL:
+               - If relative, convert to absolute using `urljoin`.
             
-            2. GENERATE PYTHON CODE (Simple & Robust):
+            2. SOLVE THE QUESTION:
                - IF CSV/EXCEL:
-                 df = pd.read_csv(url)
-                 # Force column names to be simple
-                 df.columns = [c.strip() for c in df.columns]
-                 # Find numeric column (ignore name)
-                 num_col = df.select_dtypes(include=['number']).columns[0]
-                 # Apply filter if text mentions "cutoff" or "value >"
-                 # Print sum/mean
-                 print(df[num_col].sum())
-                 
+                 - Code MUST: 
+                   1. `df = pd.read_csv(url)`
+                   2. **Find Column:** `col = [c for c in df.columns if 'val' in c.lower() or 'num' in c.lower()][0]`
+                   3. Filter: `df = df[df[col] > cutoff]` (If text mentions cutoff/filter).
+                   4. Calc: `print(df[col].sum())` (or mean/count).
                - IF SCRAPING A LINK:
-                 resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})
-                 # Just strip tags and print
-                 print(bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip())
+                 - Pick the URL from "LINKS FOUND".
+                 - Code MUST: `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
+                 - **CRITICAL:** `print(bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip())`
+               - PRINT ONLY THE FINAL ANSWER.
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... (your code here)",
+                "python_code": "import requests... import bs4... df = pd.read_csv(url)... print(ans)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -145,13 +146,11 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                         'urljoin': urljoin, 'task_url': task_url, 
                         'email': email, 're': re, 'bs4': bs4, 'io': io, 'json': json
                     }
-                    # Strip markdown blocks if AI adds them
-                    code_clean = python_code.replace("```python", "").replace("```", "").strip()
-                    exec(code_clean, exec_globals)
+                    exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
-                    print(f"❌ Code Error: {e}")
-                    final_answer = f"Error: {e}"
+                    print(f"Code Error: {e}")
+                    final_answer = "Error"
                 finally:
                     sys.stdout = old_stdout
                 print(f"✅ Computed Answer: {final_answer}")
