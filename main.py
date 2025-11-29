@@ -4,7 +4,6 @@ import asyncio
 import json
 import requests
 import pandas as pd
-import numpy as np
 import io
 import re
 import bs4
@@ -24,7 +23,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 # --- CONFIGURATION ---
 # !!! PASTE YOUR GROQ KEY HERE !!!
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "PASTE_YOUR_GROQ_KEY_HERE"
 
 client = None
 if GROQ_API_KEY and "PASTE_YOUR" not in GROQ_API_KEY:
@@ -54,7 +53,7 @@ async def get_llm_plan(prompt_text):
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a senior python developer. You write robust, fault-tolerant code."},
+                {"role": "system", "content": "You are a precise coding agent. Output valid JSON only. Do not use markdown."},
                 {"role": "user", "content": prompt_text}
             ],
             response_format={"type": "json_object"}
@@ -86,7 +85,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (SMART PROMPT WITH AUTO-CORRECTION LOGIC)
+            # 2. Plan (SIMPLIFIED CODE PROMPT)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -96,38 +95,29 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             {full_context}
             ---
             
-            TASKS:
+            YOUR TASKS:
+            1. IDENTIFY SUBMISSION URL (use urljoin if relative).
             
-            1. IDENTIFY SUBMISSION URL:
-               - If relative, make absolute using `urljoin`.
-            
-            2. GENERATE PYTHON CODE TO SOLVE THE QUESTION:
-            
-               **SCENARIO A: CSV/EXCEL PROCESSING**
-               - If the text implies downloading data (CSV/Excel) and summing/filtering:
-               - You MUST write code that handles ANY column name.
-               - Code Template to use:
-                 df = pd.read_csv(data_url)
-                 # Smart Column Detection
-                 numeric_cols = df.select_dtypes(include=[np.number]).columns
-                 target_col = numeric_cols[0] # Just pick the first numeric column
-                 # Check filters in text (e.g. "Cutoff 10000")
-                 if 'cutoff' in text_instructions_lower:
-                     df = df[df[target_col] > cutoff_value]
-                 print(df[target_col].sum())
-            
-               **SCENARIO B: SCRAPING A LINK**
-               - If text says "Scrape [Link]":
-               - Code Template to use:
-                 resp = requests.get(target_url, headers={{'User-Agent': 'Mozilla/5.0'}})
-                 # STRIP HTML TAGS
-                 clean_text = bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip()
-                 print(clean_text)
+            2. GENERATE PYTHON CODE (Simple & Robust):
+               - IF CSV/EXCEL:
+                 df = pd.read_csv(url)
+                 # Force column names to be simple
+                 df.columns = [c.strip() for c in df.columns]
+                 # Find numeric column (ignore name)
+                 num_col = df.select_dtypes(include=['number']).columns[0]
+                 # Apply filter if text mentions "cutoff" or "value >"
+                 # Print sum/mean
+                 print(df[num_col].sum())
+                 
+               - IF SCRAPING A LINK:
+                 resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})
+                 # Just strip tags and print
+                 print(bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip())
             
             OUTPUT JSON:
             {{
                 "submission_url": "https://...",
-                "python_code": "import requests... import pandas as pd... (Your robust code here)",
+                "python_code": "import requests... (your code here)",
                 "text_answer": "answer_if_no_code_needed"
             }}
             """
@@ -150,21 +140,20 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
                 try:
-                    # Provide ALL necessary libraries to the execution environment
                     exec_globals = {
-                        'pd': pd, 'np': np, 'requests': requests, 'print': print, 
+                        'pd': pd, 'requests': requests, 'print': print, 
                         'urljoin': urljoin, 'task_url': task_url, 
-                        'email': email, 're': re, 'bs4': bs4, 'io': io, 'json': json,
-                        'text_instructions_lower': content.lower() # Helper for the prompt logic
+                        'email': email, 're': re, 'bs4': bs4, 'io': io, 'json': json
                     }
-                    exec(python_code, exec_globals)
+                    # Strip markdown blocks if AI adds them
+                    code_clean = python_code.replace("```python", "").replace("```", "").strip()
+                    exec(code_clean, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
                     print(f"❌ Code Error: {e}")
                     final_answer = f"Error: {e}"
                 finally:
                     sys.stdout = old_stdout
-                
                 print(f"✅ Computed Answer: {final_answer}")
 
             # 4. Submit
