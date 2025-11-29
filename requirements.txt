@@ -9,3 +9,4 @@ python-multipart
 pydantic
 beautifulsoup4
 lxml
+numpy
