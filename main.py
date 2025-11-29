@@ -85,7 +85,7 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             full_context = f"MAIN TEXT:\n{content}\n\n--- LINKS FOUND ---\n{links}"
             print(f"📄 Scraped Context (first 500 chars):\n{full_context[:500]}...")
 
-            # 2. Plan (DEFENSIVE PROMPT)
+            # 2. Plan (SMART COLUMN & LINK LOGIC)
             prompt = f"""
             You are a Data Science Agent.
             CURRENT PAGE URL: {task_url}
@@ -101,18 +101,15 @@ async def solve_quiz(task_url: str, email: str, secret: str):
             
             2. SOLVE THE QUESTION:
                - IF CSV/EXCEL:
-                 - Look for "Cutoff" or "Filter" in text.
                  - Code MUST: 
                    1. `df = pd.read_csv(url)`
-                   2. `df.columns = df.columns.str.lower().str.strip()` (Force lowercase!)
-                   3. Look for 'value', 'values', 'count', etc.
-                   4. Filter & Calculate.
-                   5. `print(result)`
+                   2. **Find Column:** `col = [c for c in df.columns if 'val' in c.lower() or 'num' in c.lower()][0]`
+                   3. Filter: `df = df[df[col] > cutoff]` (If text mentions cutoff/filter).
+                   4. Calc: `print(df[col].sum())` (or mean/count).
                - IF SCRAPING A LINK:
-                 - Find the URL in "LINKS FOUND" that matches the instructions.
+                 - Pick the URL from "LINKS FOUND" that is NOT the Current Page URL.
                  - Code MUST: `resp = requests.get(url, headers={{'User-Agent': 'Mozilla/5.0'}})`
                  - **CRITICAL:** `print(bs4.BeautifulSoup(resp.text, 'html.parser').get_text().strip())`
-                 - This strips HTML tags so we get the clean secret code.
                - PRINT ONLY THE FINAL ANSWER.
             
             OUTPUT JSON:
@@ -149,8 +146,10 @@ async def solve_quiz(task_url: str, email: str, secret: str):
                     exec(python_code, exec_globals)
                     final_answer = redirected_output.getvalue().strip()
                 except Exception as e:
-                    print(f"❌ Code Error: {e}")
-                    final_answer = f"Error: {e}"
+                    # Capture error but don't crash
+                    print(f"Code Error: {e}")
+                    # If code fails, fallback to simple text extraction if valid
+                    final_answer = "Error"
                 finally:
                     sys.stdout = old_stdout
                 print(f"✅ Computed Answer: {final_answer}")
